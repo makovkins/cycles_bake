@@ -1,4 +1,4 @@
-# cycles_bake
+# Texture baking with Cycles
 
 This is a simple example demonstrating texture (lightmap) baking using Cycles API.
 
