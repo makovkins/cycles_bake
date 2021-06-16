@@ -69,25 +69,20 @@ typedef struct BakeDataZSpan
     float dv_dx, dv_dy;
 } BakeDataZSpan;
 
-typedef struct MyBakeData
-{
-	int width, height;
-	ImageBuf buffer_combined;
+typedef struct MyBakeData {
+    int width, height;
+    ImageBuf buffer_combined;
     ImageBuf buffer_primitive_id;
-    ImageBuf buffer_differencial;
-    ImageBuf buffer_light;
+    ImageBuf buffer_differencial;    
     ImageBuf buffer_uv;
 
-    void init(int in_width, int in_height)
+    MyBakeData(int width, int height) : 
+        width(width), height(height),
+        buffer_combined(ImageSpec(width, height, 4, TypeDesc(TypeDesc::FLOAT))),
+        buffer_primitive_id(ImageSpec(width, height, 4, TypeDesc(TypeDesc::FLOAT))),
+        buffer_differencial(ImageSpec(width, height, 4, TypeDesc(TypeDesc::FLOAT))),
+        buffer_uv(ImageSpec(width, height, 2, TypeDesc(TypeDesc::FLOAT)))
     {
-        width = in_width;
-        height = in_height;
-    	
-    	buffer_combined.reset(ImageSpec(width, height, 4, TypeDesc(TypeDesc::FLOAT)));
-        buffer_primitive_id.reset(ImageSpec(width, height, 4, TypeDesc(TypeDesc::FLOAT)));
-        buffer_differencial.reset(ImageSpec(width, height, 4, TypeDesc(TypeDesc::FLOAT)));
-        buffer_light.reset(ImageSpec(width, height, 1, TypeDesc(TypeDesc::FLOAT)));
-        buffer_uv.reset(ImageSpec(width, height, 2, TypeDesc(TypeDesc::FLOAT)));
     }
 
     void set(int x, int y, int seed, int primitive_id, float2 uv, float du_dx, float du_dy, float dv_dx, float dv_dy)
@@ -95,14 +90,14 @@ typedef struct MyBakeData
         float prim[4] = {__int_as_float(seed), __int_as_float(primitive_id), uv.x, uv.y};
         buffer_primitive_id.setpixel(x, y, prim);
         float diff[4] = {du_dx, du_dy, dv_dx, dv_dy};
-        buffer_differencial.setpixel(x, y, diff);        
+        buffer_differencial.setpixel(x, y, diff);
         buffer_uv.setpixel(x, y, &uv.x);
     }
-	
+
 } MyBakeData;
 
 
-MyBakeData bake_data;
+MyBakeData* bake_data = nullptr;
 
 
 void read_tile_from_buffer(RenderTile& rtile)
@@ -121,23 +116,21 @@ void read_tile_from_buffer(RenderTile& rtile)
 		
         if (pass.type == PASS_COMBINED)
         {
-	        bake_data.buffer_combined.get_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
+            bake_data->buffer_combined.get_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
             buffers->set_pass_rect(pass.type, pass.components, &pixels[0], rtile.num_samples);
         }
         else if (pass.type == PASS_BAKE_PRIMITIVE)
         {
-            bake_data.buffer_primitive_id.get_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
+            bake_data->buffer_primitive_id.get_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
             buffers->set_pass_rect(pass.type, pass.components, &pixels[0], rtile.num_samples);
         }
         else if (pass.type == PASS_BAKE_DIFFERENTIAL)
         {
-	        bake_data.buffer_differencial.get_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
+            bake_data->buffer_differencial.get_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
             buffers->set_pass_rect(pass.type, pass.components, &pixels[0], rtile.num_samples);
         }
         else if (pass.type == PASS_LIGHT)
-        {
-            //bake_data.buffer_light.get_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
-            //buffers->set_pass_rect(pass.type, pass.components, &pixels[0], rtile.num_samples);
+        {     
         }
         else
             assert(false);		
@@ -159,17 +152,17 @@ void write_tile_to_buffer(RenderTile& rtile)
         memset(&pixels[0], 0, pixels.size() * sizeof(float));
 
     OIIO::ROI rect = ROI(x, x + w, y, y + h);
-    bake_data.buffer_combined.set_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
+    bake_data->buffer_combined.set_pixels(rect, TypeDesc::FLOAT, &pixels[0]);
 }
 
-void save_image(string file_name, ImageBuf& render_buffer)
+void save_image(string file_name, ImageBuf& image)
 {    
     ImageOutput::unique_ptr out = ImageOutput::create(file_name);
     if (!out)
         return;
 
-	size_t width = render_buffer.spec().width;
-    size_t height = render_buffer.spec().height;        
+    size_t width = image.spec().width;
+    size_t height = image.spec().height;
 
     ImageSpec spec(width, height, 4, TypeDesc::UINT8);
     if (!out->open(file_name, spec))
@@ -177,14 +170,14 @@ void save_image(string file_name, ImageBuf& render_buffer)
 
     ROI full_rect = ROI(0, width, 0, height);
     vector<float> result(width * height * 4);
-    render_buffer.get_pixels(full_rect, TypeDesc::FLOAT, &result[0]);
+    image.get_pixels(full_rect, TypeDesc::FLOAT, &result[0]);
     int scanlinesize = width * 4 * sizeof(result[0]);
 
     if (!out->write_image(TypeDesc::FLOAT,
-                     (uchar *)&result[0] + (height - 1) * scanlinesize,
-                     AutoStride,
-                     -scanlinesize,
-                     AutoStride))
+                          (uchar *)&result[0] + (height - 1) * scanlinesize,
+                          AutoStride,
+                          -scanlinesize,
+                          AutoStride))
     {
         std::cout << "Failed to write image '" << file_name << "'." << std::endl;
     }
@@ -213,27 +206,25 @@ void add_light(Scene *scene)
 	ShaderNode *out = graph->output();
     graph->connect(emn->output("Emission"), out->input("Surface"));
 
-	Shader *shader = new Shader();
+	Shader *shader = scene->create_node<Shader>();
     shader->name = "lightShader";
     shader->set_graph(graph);
-    shader->tag_update(scene);
-    scene->shaders.push_back(shader);
+    shader->tag_update(scene);    
 
-	Light *light = new Light();
+	Light *light = scene->create_node<Light>();
 	light->set_shader(shader);
     light->set_light_type(LIGHT_POINT);
     Transform tfm = transform_identity();
     float3 co = make_float3(0, -3, 3);
     light->set_co(transform_point(&tfm, co));
     light->set_size(0.5f);
-    light->tag_update(scene);
-    scene->lights.push_back(light);
+    //light->set_spread(100);
+    light->tag_update(scene);    
 }
 
 int add_cube_shader(Scene *scene)
-{
-    Shader *shader = new Shader();
-    ShaderGraph *graph = new ShaderGraph();
+{    
+    ShaderGraph *graph = new ShaderGraph();    
 
     DiffuseBsdfNode *node = graph->create_node<DiffuseBsdfNode>();
     node->set_color(make_float3(1.0, 0.0, 0.0));
@@ -242,9 +233,10 @@ int add_cube_shader(Scene *scene)
     ShaderNode *out = graph->output();
     graph->connect(node->output("BSDF"), out->input("Surface"));
 	
+    Shader *shader = scene->create_node<Shader>();
     shader->set_graph(graph);
     shader->tag_update(scene);
-    scene->shaders.push_back(shader);
+
     return scene->shaders.size() - 1;
 }
 
@@ -256,14 +248,13 @@ void add_mesh(Scene *scene, int shader_id)
     used_shaders.push_back_slow(scene->shaders[shader_id]);
     geom->set_used_shaders(used_shaders);
 
-    Object *object = new Object();
+    Object *object = scene->create_node<Object>();
     object->set_geometry(geom);
     object->name = "cube";
     Transform tfm = transform_identity();
     tfm = tfm * transform_scale(0.5f, 0.5f, 0.5f)  * transform_euler(make_float3(0, 0, -45)) *
           transform_translate(make_float3(0, 0, 1));
-    object->set_tfm(tfm);
-    scene->objects.push_back(object);
+    object->set_tfm(tfm);    
 
     Mesh *mesh = static_cast<Mesh *>(geom);
 
@@ -322,71 +313,7 @@ void add_mesh(Scene *scene, int shader_id)
         }
 
         index_offset += nverts[i];
-    }    
-
-    /*
-    {
-        int numverts = P.size();
-        int numfaces = nverts.size();
-        int numtris = 0;
-        int numcorners = 0;
-        int numngons = 0;
-        for (size_t i = 0; i < nverts.size(); i++)
-        {
-            numcorners += nverts[i];
-            numngons += nverts[i] == 4 ? 0 : 1;
-        }
-
-        mesh->reserve_subd_faces(numfaces, numngons, numcorners);
-        mesh->reserve_mesh(numverts, numtris);
-
-        // set vertices
-        for (size_t i = 0; i < P.size(); i++)
-        {
-            mesh->add_vertex(P[i]);
-        }
-
-        AttributeSet &attributes = mesh->subd_attributes;
-
-        if (mesh->need_attribute(scene, ATTR_STD_GENERATED))
-        {
-            Attribute *attr = attributes.add(ATTR_STD_GENERATED);
-            attr->flags |= ATTR_SUBDIVIDED;
-            memcpy(attr->data_float3(),
-                   mesh->get_verts().data(),
-                   sizeof(float3) * mesh->get_verts().size());
-        }
-
-        // faces
-        vector<int> vi;
-
-        size_t index = 0;
-        for (size_t p = 0; p < nverts.size(); p++)
-        {
-            int n = nverts[p];
-            int shader = 0;
-            bool smooth = false;
-
-            vi.resize(n);
-            for (int i = 0; i < n; i++)
-            {
-                vi[i] = verts[index];
-                index++;
-            }
-
-            mesh->add_subd_face(&vi[0], n, shader, smooth);
-        }
-
-        // creases
-        mesh->reserve_subd_creases(0);
-        mesh->set_subd_dicing_rate(1.0);
-        mesh->set_subd_max_level(4);
-        mesh->set_subd_objecttoworld(object->get_tfm());
-
-        scene->dicing_camera->update(scene);
-
-        mesh->set_subdivision_type(Mesh::SUBDIVISION_CATMULL_CLARK);
-    }*/
+    }
 }
 
 int add_plain_shader(Scene *scene)
@@ -400,23 +327,9 @@ int add_plain_shader(Scene *scene)
     ShaderNode *out = graph->output();
     graph->connect(node->output("BSDF"), out->input("Surface"));
 
-/*    TextureCoordinateNode *texture_node = graph->create_node<TextureCoordinateNode>();
-    graph->add(texture_node);
-    SeparateXYZNode *separate_node = graph->create_node<SeparateXYZNode>();
-    graph->add(separate_node);
-    graph->connect(texture_node->output("UV"), separate_node->input("Vector"));
-    CombineRGBNode *combine_node = graph->create_node<CombineRGBNode>();
-    graph->add(combine_node);
-    graph->connect(separate_node->output("X"), combine_node->input("R"));
-    graph->connect(separate_node->output("Y"), combine_node->input("G"));
-    graph->connect(separate_node->output("Z"), combine_node->input("B"));
-
-    graph->connect(combine_node->output("Image"), node->input("Color"));
-*/
-	Shader *shader = new Shader();
-    shader->set_graph(graph);
-    shader->tag_update(scene);
-    scene->shaders.push_back(shader);
+    Shader *shader = scene->create_node<Shader>();    
+    shader->set_graph(graph);	
+    shader->tag_update(scene);    
 	
     return scene->shaders.size() - 1;
 }
@@ -429,14 +342,13 @@ void add_plane(Scene *scene, int shader_id)
     used_shaders.push_back_slow(scene->shaders[shader_id]);
     mesh->set_used_shaders(used_shaders);
 
-    Object *object = new Object();
+    Object *object = scene->create_node<Object>();
     object->set_geometry(mesh);
     object->name = "plane";
 	
     Transform tfm = transform_identity();
     tfm = tfm * transform_euler(make_float3(0, 0, 0)) * transform_translate(make_float3(0, 0, -0.5));
     object->set_tfm(tfm);
-    scene->objects.push_back(object);    
 
     mesh->reserve_mesh(4, 2);  // on plane 4 vertices, 2 triangles
     float plane_radius = 10.0f;
@@ -448,8 +360,8 @@ void add_plane(Scene *scene, int shader_id)
     mesh->set_verts(vertices);
 
     // triangles
-    mesh->add_triangle(0, 1, 2, 0, false);
-    mesh->add_triangle(0, 2, 3, 0, false);
+    mesh->add_triangle(0, 1, 2, 0, true);
+    mesh->add_triangle(0, 2, 3, 0, true);
 
     // uvs
     Attribute *uv_attr = mesh->attributes.add(ATTR_STD_UV, ustring("std_uv"));
@@ -460,6 +372,16 @@ void add_plane(Scene *scene, int shader_id)
     default_uv[3] = make_float2(1.0, 1.0);
     default_uv[4] = make_float2(0.0, 0.0);
     default_uv[5] = make_float2(1.0, 0.0);
+
+    // normals
+    Attribute *normal_attr = mesh->attributes.add(ATTR_STD_VERTEX_NORMAL, ustring("vertex_normal"));
+    float3 *normal = normal_attr->data_float3();
+    normal[0] = make_float3(0.0, 0.0, 1.0);
+    normal[1] = make_float3(0.0, 0.0, 1.0);
+    normal[2] = make_float3(0.0, 0.0, 1.0);
+    normal[3] = make_float3(0.0, 0.0, 1.0);
+    normal[4] = make_float3(0.0, 0.0, 1.0);
+    normal[5] = make_float3(0.0, 0.0, 1.0);
 }
 
 void setup_scene(Scene *scene, size_t width, size_t height)
@@ -479,11 +401,8 @@ void setup_scene(Scene *scene, size_t width, size_t height)
     scene->dicing_camera->set_matrix(tfm);
 
     add_light(scene);
-
-    bool use_volume = false;
-    bool use_subdiv = false;
-    int shader_id = add_cube_shader(scene);
-    add_mesh(scene, shader_id);
+    
+    add_mesh(scene, add_cube_shader(scene));
     add_plane(scene, add_plain_shader(scene));
 
     scene->integrator->set_method(Integrator::BRANCHED_PATH);
@@ -514,45 +433,6 @@ void setup_scene(Scene *scene, size_t width, size_t height)
 		bg_out->input("Surface")); bg_shader->set_graph(bg_graph);
 		bg_shader->tag_update(scene);
 	}*/
-}
-
-static ShaderEvalType get_shader_type(const string &pass_type)
-{
-    const char *shader_type = pass_type.c_str();
-
-    if (strcmp(shader_type, "NORMAL") == 0)
-        return SHADER_EVAL_NORMAL;
-    else if (strcmp(shader_type, "UV") == 0)
-        return SHADER_EVAL_UV;
-    else if (strcmp(shader_type, "ROUGHNESS") == 0)
-        return SHADER_EVAL_ROUGHNESS;
-    else if (strcmp(shader_type, "DIFFUSE_COLOR") == 0)
-        return SHADER_EVAL_DIFFUSE_COLOR;
-    else if (strcmp(shader_type, "GLOSSY_COLOR") == 0)
-        return SHADER_EVAL_GLOSSY_COLOR;
-    else if (strcmp(shader_type, "TRANSMISSION_COLOR") == 0)
-        return SHADER_EVAL_TRANSMISSION_COLOR;
-    else if (strcmp(shader_type, "EMIT") == 0)
-        return SHADER_EVAL_EMISSION;
-
-    else if (strcmp(shader_type, "AO") == 0)
-        return SHADER_EVAL_AO;
-    else if (strcmp(shader_type, "COMBINED") == 0)
-        return SHADER_EVAL_COMBINED;
-    else if (strcmp(shader_type, "SHADOW") == 0)
-        return SHADER_EVAL_SHADOW;
-    else if (strcmp(shader_type, "DIFFUSE") == 0)
-        return SHADER_EVAL_DIFFUSE;
-    else if (strcmp(shader_type, "GLOSSY") == 0)
-        return SHADER_EVAL_GLOSSY;
-    else if (strcmp(shader_type, "TRANSMISSION") == 0)
-        return SHADER_EVAL_TRANSMISSION;
-
-    else if (strcmp(shader_type, "ENVIRONMENT") == 0)
-        return SHADER_EVAL_ENVIRONMENT;
-
-    else
-        return SHADER_EVAL_BAKE;
 }
 
 static int bake_pass_filter_get(const int pass_filter)
@@ -845,12 +725,6 @@ void zspan_scanconvert(ZSpan *zspan,
     }
 }
 
-inline void copy_v2_fl2(float v[2], float x, float y)
-{
-    v[0] = x;
-    v[1] = y;
-}
-
 static void store_bake_pixel(BakeDataZSpan *handle, int x, int y, float u, float v)
 {
     BakeDataZSpan *bd = (BakeDataZSpan *)handle;
@@ -867,7 +741,8 @@ static void store_bake_pixel(BakeDataZSpan *handle, int x, int y, float u, float
     /* At this point object_id is always 0, since this function runs for the
      * low-poly mesh only. The object_id lookup indices are set afterwards. */
 
-    copy_v2_fl2(pixel->uv, u, v);
+    pixel->uv[0] = u;
+    pixel->uv[1] = v;
 
     pixel->du_dx = bd->du_dx;
     pixel->du_dy = bd->du_dy;
@@ -909,11 +784,7 @@ void populate_bake_data(const Mesh &mesh, size_t uv_map_index, MyBakeData *data)
         bd.pixel_array[i].primitive_id = -1;
         bd.pixel_array[i].object_id = 0;
     }
-    zbuf_alloc_span(bd.zspan, image_width, image_height);
-
-    /*ZSpan zspan;
-    zspan.rectx = image_width;
-    zspan.recty = image_height;*/
+    zbuf_alloc_span(bd.zspan, image_width, image_height);    
 
     Attribute *attributes = mesh.attributes.find(ATTR_STD_UV);
     float2 *fdata = attributes[uv_map_index].data_float2();
@@ -925,9 +796,6 @@ void populate_bake_data(const Mesh &mesh, size_t uv_map_index, MyBakeData *data)
         float vec[3][2];
 
         Mesh::Triangle triangle = mesh.get_triangle(i);
-        /* array<float3> p1 = mesh.verts[triangle.v[0]];
-         array<float3> p2 = mesh.verts[triangle.v[1]];
-         array<float3> p3 = mesh.verts[triangle.v[2]];*/
         for (size_t j = 0; j < 3; j++)
         {
             float2 uv = fdata[i*3 + j];
@@ -958,7 +826,7 @@ int main()
 {
     size_t width = 1024;
     size_t height = 1024;
-    size_t samples = 128;
+    size_t samples = 16;
 
     path_init();
 
@@ -970,16 +838,26 @@ int main()
     session_params.progressive_refine = false;
     session_params.tile_size.x = 32;
     session_params.tile_size.y = 32;
-#if DEBUG
+//#if DEBUG
     //session_params.threads = 1;
+//#endif
+
+    DeviceType prefered_device_type = DEVICE_CPU;
+
+#if DEBUG
+    // Force CPU in debug
+    prefered_device_type = DEVICE_CPU;
 #endif
 
-	vector<DeviceInfo> &devices = Device::available_devices();
+	vector<DeviceInfo> &devices = Device::available_devices();        
     for (DeviceInfo &device : devices)
     {
-        if (device.type == DeviceType::DEVICE_CPU)
+        std::cout << "Found device: " << device.id << std::endl;
+        if (device.type == prefered_device_type)
             session_params.device = device;
     }
+
+    std::cout << "Using device: " << session_params.device.id << std::endl;
 	
     Session *session = new Session(session_params);
     SceneParams scene_params;
@@ -988,7 +866,8 @@ int main()
     Scene *scene = new Scene(scene_params, session->device);   
     setup_scene(scene, width, height);
     session->scene = scene;
-  
+
+	clock_t time_start = clock();	
 	
 	for (auto object : scene->objects)
 	{
@@ -1004,16 +883,15 @@ int main()
 
 		std::cout << "Baking '" << object->name << "'..." << std::endl;
 
-		bake_data.init(width, height);
-        populate_bake_data(*mesh, 0, &bake_data);
+		bake_data = new MyBakeData(width, height);
+        populate_bake_data(*mesh, 0, bake_data);
 		
 		Pass::add(PASS_COMBINED, scene->passes, "Combined");
         session->read_bake_tile_cb = function_bind(&read_tile_from_buffer, _1);
         session->write_render_tile_cb = function_bind(&write_tile_to_buffer, _1);
-
-        ShaderEvalType shader_type = get_shader_type("COMBINED");
+        
         int bake_pass_filter = bake_pass_filter_get(0);
-        scene->bake_manager->set(scene, object->name.c_str(), shader_type, bake_pass_filter);
+        scene->bake_manager->set(scene, object->name.c_str(), SHADER_EVAL_COMBINED, bake_pass_filter);
 
         BufferParams buffer_params;
         buffer_params.width = width;
@@ -1023,13 +901,17 @@ int main()
         buffer_params.passes = scene->passes;
 
         session->tile_manager.set_samples(session_params.samples);
-        session->reset(buffer_params, session_params.samples);	
+        session->reset(buffer_params, session_params.samples);		
 
 		session->start();
         session->wait();
 
-		save_image(string("T_") + object->name.c_str() + ".png", bake_data.buffer_combined);
+		save_image(string("T_") + object->name.c_str() + ".png", bake_data->buffer_combined);
+        delete bake_data;
 	}
 
-    std::cout << "Finish baking" << std::endl;    
+	clock_t time_end = clock();
+    std::cout << "Finish baking. Elapsed time = " << (float)(time_end - time_start) / CLOCKS_PER_SEC << "s" << std::endl;
+    
+    delete session;
 }
