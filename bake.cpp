@@ -380,8 +380,6 @@ void add_plane(Scene *scene, int shader_id)
     normal[1] = make_float3(0.0, 0.0, 1.0);
     normal[2] = make_float3(0.0, 0.0, 1.0);
     normal[3] = make_float3(0.0, 0.0, 1.0);
-    normal[4] = make_float3(0.0, 0.0, 1.0);
-    normal[5] = make_float3(0.0, 0.0, 1.0);
 }
 
 void setup_scene(Scene *scene, size_t width, size_t height)
